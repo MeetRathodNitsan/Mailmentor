@@ -99,9 +99,11 @@ ollama_client = OllamaClient()
 def generate_local_summary(content: str) -> str:
     try:
         # Use the bart-large-cnn model for summarization
-        summary = summarizer(content, max_length=MODEL_PARAMS["max_length"], 
+        summary = summarizer(content, 
+                           max_length=MODEL_PARAMS["max_length"], 
                            min_length=MODEL_PARAMS["min_length"], 
-                           do_sample=True)[0]['summary_text']
+                           do_sample=True,
+                           temperature=MODEL_PARAMS["temperature"])[0]['summary_text']
         return _post_process_summary(content, summary)
     except Exception as e:
         print(f"Error generating local summary: {e}")
@@ -110,9 +112,11 @@ def generate_local_summary(content: str) -> str:
 def generate_local_response(subject: str, content: str) -> str:
     try:
         prompt = f"Subject: {subject}\nContent: {content}\nWrite a professional response:"
-        response = responder(prompt, max_length=MODEL_PARAMS["max_length"], 
+        response = responder(prompt, 
+                           max_length=MODEL_PARAMS["max_length"], 
                            do_sample=True, 
-                           temperature=MODEL_PARAMS["temperature"])[0]['generated_text']
+                           temperature=MODEL_PARAMS["temperature"],
+                           top_p=MODEL_PARAMS["top_p"])[0]['generated_text']
         return response.split('\n')[0].strip()
     except Exception as e:
         print(f"Error generating local response: {e}")

@@ -1,4 +1,5 @@
 import base64
+import html
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from ollama_client import OllamaClient
@@ -694,17 +695,24 @@ class EmailProcessor:
                         if part.get('mimeType', '').startswith('text/html') and 'data' in part.get('body', {}):
                             decoded = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
                             soup = BeautifulSoup(decoded, 'html.parser')
+                            # Remove unwanted elements
                             for tag in soup(['script', 'style', 'head', 'title', 'meta', '[document]', 'header', 'footer', 'nav']):
                                 tag.decompose()
+                            # Remove HTML comments
                             for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
                                 comment.extract()
+                            # Get clean text
                             text = soup.get_text(separator=' ', strip=True)
                             text = ' '.join(text.split())
+                            # Escape email addresses and HTML characters
+                            text = re.sub(r'([\w\.-]+@[\w\.-]+)', lambda m: html.escape(m.group(1)), text)
                             if text:
                                 parts.append(text)
                         elif part.get('mimeType', '').startswith('text/plain') and 'data' in part.get('body', {}):
                             decoded = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='ignore')
                             text = ' '.join(decoded.split())
+                            # Escape email addresses
+                            text = re.sub(r'([\w\.-]+@[\w\.-]+)', lambda m: html.escape(m.group(1)), text)
                             if text:
                                 parts.append(text)
                 elif 'body' in email_data['payload'] and 'data' in email_data['payload']['body']:
@@ -716,43 +724,34 @@ class EmailProcessor:
                         comment.extract()
                     text = soup.get_text(separator=' ', strip=True)
                     text = ' '.join(text.split())
+                    # Escape email addresses
+                    text = re.sub(r'([\w\.-]+@[\w\.-]+)', lambda m: html.escape(m.group(1)), text)
                     if text:
                         parts.append(text)
+
             content = ' '.join(parts)
+            # Clean any remaining HTML tags
             content = re.sub(r'<[^>]+>', '', content)
+            # Ensure all HTML entities are properly escaped
+            content = html.escape(content)
             content = ' '.join(content.split())
 
-            # --- AI summary and response using OpenAI ---
+            # Generate AI summary and response using local models
             ai_summary = ""
             ai_response = ""
             if content and len(content) > 20:
                 try:
-                    summary_prompt = f"Summarize this email in one sentence:\n\n{content}"
-                    summary_response = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
-                        messages=[
-                            {"role": "system", "content": "You are an assistant that summarizes emails."},
-                            {"role": "user", "content": summary_prompt}
-                        ],
-                        max_tokens=60,
-                        temperature=0.3
-                    )
-                    ai_summary = summary_response['choices'][0]['message']['content'].strip()
+                    # Use local BART model for summarization
+                    summary_model = pipeline('summarization', model='facebook/bart-large-cnn')
+                    ai_summary = summary_model(content, max_length=60, min_length=20, do_sample=False)[0]['summary_text']
                 except Exception as e:
                     print(f"Error generating summary: {e}")
                     ai_summary = "No summary available."
+
                 try:
-                    response_prompt = f"Write a brief, professional response to this email:\n\n{content}"
-                    response_response = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
-                        messages=[
-                            {"role": "system", "content": "You are a professional assistant. Provide a single-line response acknowledging the meeting or task. Do not repeat the email content, time, or subject."},
-                            {"role": "user", "content": response_prompt}
-                        ],
-                        max_tokens=60,
-                        temperature=0.3
-                    )
-                    ai_response = response_response['choices'][0]['message']['content'].strip()
+                    # Use local Blenderbot model for response generation
+                    response_model = pipeline('text2text-generation', model='facebook/blenderbot-400M-distill')
+                    ai_response = response_model(content, max_length=60, min_length=20, do_sample=False)[0]['generated_text']
                 except Exception as e:
                     print(f"Error generating response: {e}")
                     ai_response = "No AI response available."

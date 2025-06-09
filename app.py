@@ -1,4 +1,6 @@
 import streamlit as st
+import html
+from datetime import timezone 
 import os
 import json
 from bs4 import BeautifulSoup
@@ -477,12 +479,17 @@ def show_recent_emails():
             
             # Display email content
             content = email.get('body', 'No content available')
+            # Clean and decode HTML entities
+            content = html.unescape(content)
+            content = content.replace('<', '&lt;').replace('>', '&gt;')
+            
             if len(content) > 500:
-                st.text(content[:500])
-                with st.expander("Read more"):
-                    st.text(content[500:])
+                st.markdown(content[:500])
+                # Move the content display outside the expander
+                st.markdown("**Read more:**")
+                st.markdown(content[500:])
             else:
-                st.text(content)
+                st.markdown(content)
 
 def show_dashboard():
     st.markdown("""
@@ -635,20 +642,20 @@ def show_dashboard():
                             # Display content with "Read more" feature
                             content = email.get('body', 'No content available')
                             if len(content) > 500:
-                                st.markdown(content[:500])
+                                st.markdown(content[:500].replace('<', '&lt;').replace('>', '&gt;'))
                                 with st.expander("Read more"):
-                                    st.markdown(content[500:])
+                                    st.markdown(content[500:].replace('<', '&lt;').replace('>', '&gt;'))
                             else:
-                                st.markdown(content)
+                                st.markdown(content.replace('<', '&lt;').replace('>', '&gt;'))
                             
                             # Display AI content if available
                             if email.get('ai_summary'):
                                 st.markdown("### 🤖 AI Summary")
-                                st.markdown(email['ai_summary'])
+                                st.markdown(email['ai_summary'].replace('<', '&lt;').replace('>', '&gt;'))
                             
                             if email.get('ai_response'):
                                 st.markdown("### 💡 AI Response")
-                                st.markdown(email['ai_response'])
+                                st.markdown(email['ai_response'].replace('<', '&lt;').replace('>', '&gt;'))
                         </div>
                     """, unsafe_allow_html=True)
                     
@@ -722,6 +729,7 @@ def show_inbox():
         
     # Sort by date
     def parse_email_timestamp(timestamp_str):
+        # Add this import at the top of the function
         timestamp_formats = [
             '%a, %d %b %Y %H:%M:%S %z',  # RFC 2822 format with timezone
             '%a, %d %b %Y %H:%M:%S (UTC)',  # Format with (UTC)
@@ -731,18 +739,22 @@ def show_inbox():
         ]
         
         if not timestamp_str:
-            return datetime.min
+            return datetime.min.replace(tzinfo=timezone.utc)
             
         for fmt in timestamp_formats:
             try:
                 # Remove (UTC) and replace with +0000
                 cleaned_timestamp = timestamp_str.replace('(UTC)', '+0000').replace('GMT', '+0000')
-                return datetime.strptime(cleaned_timestamp, fmt)
+                parsed_date = datetime.strptime(cleaned_timestamp, fmt)
+                # Ensure timezone awareness
+                if parsed_date.tzinfo is None:
+                    parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+                return parsed_date
             except ValueError:
                 continue
         
-        # If no format matches, return a default date
-        return datetime.min
+        # If no format matches, return a default date with UTC timezone
+        return datetime.min.replace(tzinfo=timezone.utc)
     
     # Sort emails using the new parsing function
     emails = sorted(emails,
@@ -781,12 +793,17 @@ def show_inbox():
             
             # Display email content
             content = email.get('body', 'No content available')
+            # Clean and decode HTML entities
+            content = html.unescape(content)
+            content = content.replace('<', '&lt;').replace('>', '&gt;')
+            
             if len(content) > 500:
-                st.text(content[:500])
-                with st.expander("Read more"):
-                    st.text(content[500:])
+                st.markdown(content[:500])
+                # Move the content display outside the expander
+                st.markdown("**Read more:**")
+                st.markdown(content[500:])
             else:
-                st.text(content)
+                st.markdown(content)
 
 @st.cache_data(ttl=300)
 def fetch_cached_action_items(status_filter="All"):
