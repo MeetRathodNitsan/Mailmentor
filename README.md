@@ -37,7 +37,7 @@
 - **NLP:** TF-IDF, Cosine Similarity, Transformers (BART/T5)
 - **Libraries:** scikit-learn, pandas, matplotlib, transformers
 - **API:** Gmail API (OAuth2)
-- **Storage:** SQLite (temporary local DB)
+- **Storage:** PostgreSQL (temporary local DB)
 
 ---
 
