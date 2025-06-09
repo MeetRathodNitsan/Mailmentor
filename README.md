@@ -56,8 +56,8 @@ See the [LICENSE](LICENSE) file for more details.
 
 ## 👤 Author
 
-**Rahul Bose**  
-[LinkedIn](https://linkedin.com/in/yourprofile) | [GitHub](https://github.com/yourusername)
+**Meet Rathod**  
+[LinkedIn](https://linkedin.com/in/meetrathod171811) | [GitHub](https://github.com/MeetRathodNitsan)
 
 ---
 
