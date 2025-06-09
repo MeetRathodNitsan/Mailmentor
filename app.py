@@ -376,20 +376,31 @@ def fetch_cached_stats():
 
 @st.cache_data(ttl=300)
 def fetch_cached_emails(limit=20, offset=0):
+    if not st.session_state.email_processor:
+        return []
+        
     cache_key = f"emails_{limit}_{offset}"
-    if cache_key in st.session_state.get('email_cache', {}):
-        return st.session_state['email_cache'][cache_key]
     
-    emails = st.session_state.email_processor.fetch_emails(limit=limit)
-    # Ensure all emails have a timestamp
-    for email in emails:
-        if 'timestamp' not in email:
-            email['timestamp'] = '1970-01-01 00:00:00 +0000'  # Default timestamp for sorting
+    # Check if cache needs refresh
+    current_time = datetime.now()
+    if ('last_cache_update' not in st.session_state or 
+        not st.session_state['last_cache_update'] or 
+        (current_time - st.session_state['last_cache_update']).seconds > 300):
+        
+        emails = st.session_state.email_processor.fetch_emails(limit=limit)
+        
+        # Ensure all emails have required fields
+        for email in emails:
+            if 'timestamp' not in email:
+                email['timestamp'] = '1970-01-01 00:00:00 +0000'
+            if 'priority' not in email:
+                email['priority'] = 'Normal'
+        
+        st.session_state['email_cache'] = {cache_key: emails}
+        st.session_state['last_cache_update'] = current_time
+        return emails
     
-    if 'email_cache' not in st.session_state:
-        st.session_state['email_cache'] = {}
-    st.session_state['email_cache'][cache_key] = emails
-    return emails
+    return st.session_state['email_cache'].get(cache_key, [])
 
 @st.cache_data(ttl=300)
 def filter_emails(emails):
@@ -438,6 +449,40 @@ def show_email_stats():
     except Exception as e:
         st.error(f"Error fetching email statistics: {str(e)}")
         print(f"Detailed error: {e}")
+
+def show_recent_emails():
+    st.header("Recent Emails")
+    if not st.session_state.email_processor:
+        st.warning("Please connect your Gmail account first")
+        return
+
+    emails = fetch_cached_emails(limit=10)
+    
+    for email in emails:
+        with st.expander(f"📧 {email.get('subject', 'No Subject')}"):
+            priority = email.get('priority', 'Normal')
+            priority_color = {
+                'High': '#f44336',
+                'Normal': '#2196f3',
+                'Low': '#4caf50'
+            }.get(priority, '#2196f3')
+            
+            st.markdown(f"""
+                <div style='border-left: 4px solid {priority_color}; padding-left: 1rem;'>
+                    <p><strong>From:</strong> {email.get('sender', 'Unknown')}</p>
+                    <p><strong>Date:</strong> {email.get('timestamp', 'Unknown')}</p>
+                    <p><strong>Priority:</strong> {priority}</p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Display email content
+            content = email.get('body', 'No content available')
+            if len(content) > 500:
+                st.text(content[:500])
+                with st.expander("Read more"):
+                    st.text(content[500:])
+            else:
+                st.text(content)
 
 def show_dashboard():
     st.markdown("""
@@ -571,14 +616,6 @@ def show_dashboard():
                 else:
                     st.text(body)
                 
-                # Display AI content if available
-                if email.get('ai_summary'):
-                    st.markdown("### 🤖 AI Summary")
-                    st.text(email['ai_summary'])
-                
-                if email.get('ai_response'):
-                    st.markdown("### 💡 AI Response")
-                    st.text(email['ai_response'])
 
         # Modify the AI Summaries & Responses tab
         with tab2:
@@ -596,21 +633,22 @@ def show_dashboard():
                             <p style='color:gray;margin:5px 0'><strong>From:</strong> {sender}</p>
                             
                             # Display content with "Read more" feature
+                            content = email.get('body', 'No content available')
                             if len(content) > 500:
-                                st.text(content[:500])
-                                if st.button("Read more", key=f"read_more_{email.get('id', '')}"):
-                                    st.text(content[500:])
+                                st.markdown(content[:500])
+                                with st.expander("Read more"):
+                                    st.markdown(content[500:])
                             else:
-                                st.text(content)
+                                st.markdown(content)
                             
                             # Display AI content if available
                             if email.get('ai_summary'):
                                 st.markdown("### 🤖 AI Summary")
-                                st.text(email['ai_summary'])
+                                st.markdown(email['ai_summary'])
                             
                             if email.get('ai_response'):
                                 st.markdown("### 💡 AI Response")
-                                st.text(email['ai_response'])
+                                st.markdown(email['ai_response'])
                         </div>
                     """, unsafe_allow_html=True)
                     
@@ -660,6 +698,7 @@ def show_inbox():
     if not st.session_state.email_processor:
         st.warning("Please connect your Gmail account first")
         return
+        
     col1, col2 = st.columns(2)
     with col1:
         sort_by_date = st.selectbox(
@@ -673,106 +712,81 @@ def show_inbox():
             ["High Priority First", "Low Priority First"],
             key="sort_priority"
         )
-    emails = fetch_cached_emails(limit=st.session_state.get('emails_per_page', 20))
-    def parse_timestamp(timestamp):
-        from datetime import timezone
-        try:
-            formats = [
-                ('%a, %d %b %Y %H:%M:%S %z', True),
-                ('%a, %d %b %Y %H:%M:%S GMT', False),
-                ('%a, %d %b %Y %H:%M:%S +0000', True)
-            ]
-            for fmt, has_tz in formats:
-                try:
-                    dt = datetime.strptime(timestamp.replace('GMT', '+0000'), fmt)
-                    if not has_tz:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    return dt
-                except ValueError:
-                    continue
-            return datetime.now(timezone.utc)
-        except Exception:
-            return datetime.now(timezone.utc)
-    if sort_by_date == "Oldest First":
-        emails = sorted(emails, key=lambda x: parse_timestamp(x['timestamp']))
-    else:
-        emails = sorted(emails, key=lambda x: parse_timestamp(x['timestamp']), reverse=True)
-    if sort_by_priority == "High Priority First":
-        emails = sorted(emails, key=lambda x: x.get('priority', 'Low') == 'High', reverse=True)
-    for email in emails:
-        # Filter out ads and automated emails
-        sender_email = email.get('sender', '').lower()
-        sender_name = re.findall(r'([^<]+)\s*<', sender_email)
-        sender_name = sender_name[0].strip() if sender_name else sender_email
-        subject = email.get('subject', '').lower()
         
-        # Skip if not from important person
-        if not any([
-            # Internal team members (customize these patterns)
-            '@company.com' in sender_email,
-            '@internal.org' in sender_email,
-            # Important external contacts (customize these patterns)
-            sender_email.endswith('@client.com'),
-            sender_email.endswith('@partner.com'),
-            # Known important persons (add specific email addresses)
-            sender_email in ['ceo@company.com', 'manager@company.com'],
-            # Important roles
-            any(role in sender_name.lower() for role in [
-                'director', 'manager', 'lead', 'head',
-                'ceo', 'cto', 'cfo', 'vp', 'president'
-            ])
+    # Fetch emails with increased limit to account for filtering
+    emails = fetch_cached_emails(limit=50)
+    
+    if not emails:
+        st.info("No emails found")
+        return
+        
+    # Sort by date
+    def parse_email_timestamp(timestamp_str):
+        timestamp_formats = [
+            '%a, %d %b %Y %H:%M:%S %z',  # RFC 2822 format with timezone
+            '%a, %d %b %Y %H:%M:%S (UTC)',  # Format with (UTC)
+            '%a, %d %b %Y %H:%M:%S GMT',  # Format with GMT
+            '%Y-%m-%d %H:%M:%S %z',  # ISO format with timezone
+            '%a, %d %b %Y %H:%M:%S +0000'  # Format with +0000
+        ]
+        
+        if not timestamp_str:
+            return datetime.min
+            
+        for fmt in timestamp_formats:
+            try:
+                # Remove (UTC) and replace with +0000
+                cleaned_timestamp = timestamp_str.replace('(UTC)', '+0000').replace('GMT', '+0000')
+                return datetime.strptime(cleaned_timestamp, fmt)
+            except ValueError:
+                continue
+        
+        # If no format matches, return a default date
+        return datetime.min
+    
+    # Sort emails using the new parsing function
+    emails = sorted(emails,
+                   key=lambda x: parse_email_timestamp(x.get('timestamp', '')),
+                   reverse=(sort_by_date == "Newest First"))
+    
+    # Sort by priority
+    if sort_by_priority == "High Priority First":
+        emails = sorted(emails, key=lambda x: x.get('priority', 'Normal') != 'High', reverse=False)
+    
+    # Display emails
+    for email in emails:
+        # Skip automated emails
+        if any(pattern in email.get('sender', '').lower() for pattern in [
+            'noreply', 'no-reply', 'notification', 'alert', 'update',
+            'newsletter', 'marketing', 'promo', 'offer', 'deals'
         ]):
             continue
             
-        # Skip automated and marketing emails
-        if any(pattern in sender_email for pattern in [
-            '@newsletter', '@marketing', '@promo', '@offer', '@deals',
-            'noreply', 'no-reply', 'notification', 'automated', 'donotreply',
-            'alert', 'update', 'info@', 'support@', 'newsletter@',
-            '@premium', '@subscription', '@campaign', '@advertising'
-        ]):
-            continue
-
-        content = email.get('body', 'No content available')
-        st.text(content)
-        
-        subject = email.get('subject', 'No Subject')
-        sender = email.get('sender', 'Unknown Sender')
-        timestamp = email.get('timestamp', 'Unknown Date')
-        category = email.get('category', 'General')
-        priority = email.get('priority', 'Normal')
-        priority_color = {
-            'High': '#f44336',
-            'Normal': '#2196f3',
-            'Low': '#4caf50'
-        }.get(priority, '#2196f3')
-
         # Display email content
         with st.expander(f"📧 {email.get('subject', 'No Subject')}"):
+            priority = email.get('priority', 'Normal')
+            priority_color = {
+                'High': '#f44336',
+                'Normal': '#2196f3',
+                'Low': '#4caf50'
+            }.get(priority, '#2196f3')
+            
             st.markdown(f"""
                 <div style='border-left: 4px solid {priority_color}; padding-left: 1rem;'>
-                    <p><strong>From:</strong> {sender}</p>
-                    <p><strong>Date:</strong> {timestamp}</p>
-                    <p><strong>Category:</strong> {category}</p>
+                    <p><strong>From:</strong> {email.get('sender', 'Unknown')}</p>
+                    <p><strong>Date:</strong> {email.get('timestamp', 'Unknown')}</p>
+                    <p><strong>Priority:</strong> {priority}</p>
                 </div>
             """, unsafe_allow_html=True)
             
-            # Display content with "Read more" feature
+            # Display email content
+            content = email.get('body', 'No content available')
             if len(content) > 500:
                 st.text(content[:500])
                 with st.expander("Read more"):
                     st.text(content[500:])
             else:
                 st.text(content)
-            
-            # Display AI content if available
-            if email.get('ai_summary'):
-                st.markdown("### 🤖 AI Summary")
-                st.text(email['ai_summary'])
-            
-            if email.get('ai_response'):
-                st.markdown("### 💡 AI Response")
-                st.text(email['ai_response'])
 
 @st.cache_data(ttl=300)
 def fetch_cached_action_items(status_filter="All"):
