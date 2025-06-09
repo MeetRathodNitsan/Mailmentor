@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    depends_on:
+      - db
+    environment:
+      - DATABASE_URL=postgresql://postgres:admin@db:5432/mailmentor
+      - OPENAI_API_KEY=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
+    volumes:
+      - .:/app
+
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_DB: mailmentor
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
