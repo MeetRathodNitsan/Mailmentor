@@ -4,6 +4,7 @@ from datetime import timezone
 import os
 import json
 from bs4 import BeautifulSoup
+from ai_services import analyze_email_content, initialize_models
 import pandas as pd
 from datetime import datetime
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -26,6 +27,9 @@ class CustomHTTPAdapter(HTTPAdapter):
         context.set_ciphers('DEFAULT@SECLEVEL=1')
         kwargs['ssl_context'] = context
         return super().init_poolmanager(*args, **kwargs)
+
+# Initialize AI models
+initialize_models()  # Initialize the models once at startup
 
 # Page configuration
 st.set_page_config(page_title="Mail Mentor", layout="wide")
@@ -94,6 +98,24 @@ def apply_theme():
 
 def apply_custom_css():
     st.markdown("""
+        <style>
+        .ai-analysis-container {
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 10px 0;
+            border: 1px solid rgba(49, 51, 63, 0.2);
+        }
+        .ai-summary {
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(49, 51, 63, 0.2);
+        }
+        .ai-response {
+            margin-top: 10px;
+        }
+        </style>
+
         <style>
             /* Global Styles */
             :root {
@@ -624,52 +646,59 @@ def show_dashboard():
                     st.text(body)
                 
 
+        # Show notification about filtered emails
+        st.info("📝 Note: Promotional emails from Google, Amazon, and other advertising sources are automatically filtered out.")
+
         # Modify the AI Summaries & Responses tab
         with tab2:
             if not any(email.get('ai_summary') or email.get('ai_response') for email in filtered_emails[:20]):
-                st.info("No AI summaries or responses have been generated yet. They will appear here once processed.")
+                st.info("No AI summaries or responses have been generated yet. Click 'Generate AI Analysis' for any email to process it.")
             
             for email in filtered_emails[:20]:
+                subject = email.get('subject', 'No Subject').replace('<', '&lt;').replace('>', '&gt;')
+                
+                # Add Generate/Refresh button and title in a single row
+                col1, col2 = st.columns([1, 4])
+                with col1:
+                    if st.button("Generate AI Analysis", key=f"generate_ai_{email.get('id', '')}"):
+                        with st.spinner("Generating AI analysis..."):
+                            summary, response = analyze_email_content(email.get('subject', ''), email.get('body', ''))
+                            email['ai_summary'] = summary
+                            email['ai_response'] = response
+                            
+                            # Save to database
+                            try:
+                                session = SessionLocal()
+                                email_record = session.query(Email).filter(Email.id == email.get('id')).first()
+                                if email_record:
+                                    email_record.summary = summary
+                                    email_record.ai_response = response
+                                    session.commit()
+                            except Exception as e:
+                                st.error(f"Error saving AI analysis: {str(e)}")
+                            finally:
+                                session.close()
+                
+                with col2:
+                    st.markdown(f"### 📧 {subject}")
+                
+                # Display AI content if available
                 if email.get('ai_summary') or email.get('ai_response'):
-                    subject = email.get('subject', 'No Subject').replace('<', '&lt;').replace('>', '&gt;')
-                    sender = email.get('sender', 'Unknown Sender').replace('<', '&lt;').replace('>', '&gt;')
-                    
-                    st.markdown(f"""
-                        <div class='email-card'>
-                            <h4 style='margin:0'>📧 {subject}</h4>
-                            <p style='color:gray;margin:5px 0'><strong>From:</strong> {sender}</p>
-                            
-                            # Display content with "Read more" feature
-                            content = email.get('body', 'No content available')
-                            if len(content) > 500:
-                                st.markdown(content[:500].replace('<', '&lt;').replace('>', '&gt;'))
-                                with st.expander("Read more"):
-                                    st.markdown(content[500:].replace('<', '&lt;').replace('>', '&gt;'))
-                            else:
-                                st.markdown(content.replace('<', '&lt;').replace('>', '&gt;'))
-                            
-                            # Display AI content if available
-                            if email.get('ai_summary'):
-                                st.markdown("### 🤖 AI Summary")
-                                st.markdown(email['ai_summary'].replace('<', '&lt;').replace('>', '&gt;'))
-                            
-                            if email.get('ai_response'):
-                                st.markdown("### 💡 AI Response")
-                                st.markdown(email['ai_response'].replace('<', '&lt;').replace('>', '&gt;'))
+                    st.markdown("""
+                        <div class='ai-analysis-container'>
+                            <div class='ai-summary'>
+                                <h3>🤖 AI Summary</h3>
+                                {summary}
+                            </div>
+                            <div class='ai-response'>
+                                <h3>💡 AI Response</h3>
+                                {response}
+                            </div>
                         </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if email.get('ai_summary'):
-                        st.markdown(f"""<div style='margin:10px 0;padding:10px;background:rgba(49, 51, 63, 0.1);border-radius:5px'>
-                            <p style='margin:0'><strong>🤖 AI Summary:</strong></p>
-                            <p style='margin:5px 0'>{email['ai_summary']}</p></div>""",
-                            unsafe_allow_html=True)
-                    
-                    if email.get('ai_response'):
-                        st.markdown(f"""<div style='margin:10px 0;padding:10px;background:rgba(49, 51, 63, 0.1);border-radius:5px'>
-                            <p style='margin:0'><strong>💡 AI Response:</strong></p>
-                            <p style='margin:5px 0'>{email['ai_response']}</p></div>""",
-                            unsafe_allow_html=True)
+                    """.format(
+                        summary=email.get('ai_summary', 'No summary available').replace('<', '&lt;').replace('>', '&gt;'),
+                        response=email.get('ai_response', 'No response available').replace('<', '&lt;').replace('>', '&gt;')
+                    ), unsafe_allow_html=True)
 
         st.text(f"Last Updated: {stats['last_updated']}")
 
@@ -719,91 +748,21 @@ def show_inbox():
             ["High Priority First", "Low Priority First"],
             key="sort_priority"
         )
-        
+            
     # Fetch emails with increased limit to account for filtering
     emails = fetch_cached_emails(limit=50)
     
     if not emails:
         st.info("No emails found")
         return
-        
-    # Sort by date
-    def parse_email_timestamp(timestamp_str):
-        # Add this import at the top of the function
-        timestamp_formats = [
-            '%a, %d %b %Y %H:%M:%S %z',  # RFC 2822 format with timezone
-            '%a, %d %b %Y %H:%M:%S (UTC)',  # Format with (UTC)
-            '%a, %d %b %Y %H:%M:%S GMT',  # Format with GMT
-            '%Y-%m-%d %H:%M:%S %z',  # ISO format with timezone
-            '%a, %d %b %Y %H:%M:%S +0000'  # Format with +0000
-        ]
-        
-        if not timestamp_str:
-            return datetime.min.replace(tzinfo=timezone.utc)
             
-        for fmt in timestamp_formats:
-            try:
-                # Remove (UTC) and replace with +0000
-                cleaned_timestamp = timestamp_str.replace('(UTC)', '+0000').replace('GMT', '+0000')
-                parsed_date = datetime.strptime(cleaned_timestamp, fmt)
-                # Ensure timezone awareness
-                if parsed_date.tzinfo is None:
-                    parsed_date = parsed_date.replace(tzinfo=timezone.utc)
-                return parsed_date
-            except ValueError:
-                continue
-        
-        # If no format matches, return a default date with UTC timezone
-        return datetime.min.replace(tzinfo=timezone.utc)
-    
-    # Sort emails using the new parsing function
-    emails = sorted(emails,
-                   key=lambda x: parse_email_timestamp(x.get('timestamp', '')),
-                   reverse=(sort_by_date == "Newest First"))
-    
-    # Sort by priority
-    if sort_by_priority == "High Priority First":
-        emails = sorted(emails, key=lambda x: x.get('priority', 'Normal') != 'High', reverse=False)
-    
-    # Display emails
     for email in emails:
-        # Skip automated emails
-        if any(pattern in email.get('sender', '').lower() for pattern in [
-            'noreply', 'no-reply', 'notification', 'alert', 'update',
-            'newsletter', 'marketing', 'promo', 'offer', 'deals'
-        ]):
-            continue
-            
-        # Display email content
-        with st.expander(f"📧 {email.get('subject', 'No Subject')}"):
-            priority = email.get('priority', 'Normal')
-            priority_color = {
-                'High': '#f44336',
-                'Normal': '#2196f3',
-                'Low': '#4caf50'
-            }.get(priority, '#2196f3')
-            
-            st.markdown(f"""
-                <div style='border-left: 4px solid {priority_color}; padding-left: 1rem;'>
-                    <p><strong>From:</strong> {email.get('sender', 'Unknown')}</p>
-                    <p><strong>Date:</strong> {email.get('timestamp', 'Unknown')}</p>
-                    <p><strong>Priority:</strong> {priority}</p>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            # Display email content
-            content = email.get('body', 'No content available')
-            # Clean and decode HTML entities
-            content = html.unescape(content)
-            content = content.replace('<', '&lt;').replace('>', '&gt;')
-            
-            if len(content) > 500:
-                st.markdown(content[:500])
-                # Move the content display outside the expander
-                st.markdown("**Read more:**")
-                st.markdown(content[500:])
-            else:
-                st.markdown(content)
+        with st.expander(f"📧 {html.escape(email.get('subject', 'No Subject'))}"):
+            st.markdown(f"**From:** {html.escape(email.get('sender', 'Unknown'))}")
+            st.markdown(f"**Date:** {email.get('timestamp', 'Unknown')}")
+            st.markdown(f"**Priority:** {email.get('priority', 'Normal')}")
+            st.markdown("---")
+            st.markdown(html.escape(email.get('body', 'No content')))
 
 @st.cache_data(ttl=300)
 def fetch_cached_action_items(status_filter="All"):

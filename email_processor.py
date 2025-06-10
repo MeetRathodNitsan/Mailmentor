@@ -1,7 +1,10 @@
 import base64
+from models import Email
+from sqlalchemy.orm import Session
+from config import engine
 import html
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime,timezone
 from ollama_client import OllamaClient
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
@@ -28,7 +31,6 @@ import numpy as np
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import datetime
 from transformers import pipeline
 import time
 from transformers import AutoTokenizer, AutoModel
@@ -71,6 +73,9 @@ class EmailProcessor:
         self.credentials = credentials
         self.service = build('gmail', 'v1', credentials=credentials)
         self.vectorizer = TfidfVectorizer()
+        self.email_cache = {}
+        self.last_cache_update = None
+
 
     def _preprocess_text(self, text):
         text = text.lower()
@@ -80,6 +85,8 @@ class EmailProcessor:
         tokens = [word for word in tokens if word not in STOP_WORDS]
         return " ".join(tokens)
 
+        
+       
     def search_emails_nlp(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         try:
             emails = self.fetch_emails(100)  # Adjust fetch limit as needed
@@ -106,17 +113,23 @@ class EmailProcessor:
 
     def fetch_emails(self, limit: int = 15) -> List[Dict[str, Any]]:
         try:
-            # Pre-filter query to exclude automated emails and get recent emails
-            query = ("-{from:(*@newsletter.* OR *@marketing.* OR *@promo.* OR "
-                     "*@offer.* OR *@deals.* OR noreply* OR no-reply* OR "
-                     "notification* OR automated* OR donotreply* OR "
-                     "alert* OR update* OR info@* OR support@* OR newsletter@* OR "
-                     "*@premium.* OR *@subscription.* OR *@campaign.* OR *@advertising.*)}")
+            # Remove the time restriction and focus on filtering out non-personal emails
+            query = "from:(*@*.* -@newsletter.* -@marketing.* "\
+                    "-@promo.* -@offer.* -@deals.* -noreply* "\
+                    "-no-reply* -notification* -automated* -donotreply* "\
+                    "-automated* -update* -info@* -support@* -newsletter@*)"
             
-            # Fetch messages from Gmail API with query
+            # Check local cache
+            cache_key = f"emails_{limit}"
+            current_time = datetime.now(timezone.utc)
+            if cache_key in self.email_cache:
+                cached_data = self.email_cache[cache_key]
+                if (current_time - cached_data['timestamp']).seconds < 300:  # 5 min cache
+                    return cached_data['emails']
+            
             results = self.service.users().messages().list(
                 userId='me',
-                maxResults=limit,
+                maxResults=limit * 2,  # Fetch extra to account for filtering
                 q=query
             ).execute()
             
@@ -126,19 +139,19 @@ class EmailProcessor:
             for message in messages:
                 email_data = self._process_single_email(message['id'])
                 if email_data:
-                    # Extract sender name and email
-                    sender = email_data['sender']
-                    sender_name = re.findall(r'([^<]+)\s*<', sender)
-                    sender_name = sender_name[0].strip() if sender_name else sender
-                    sender_email = re.findall(r'<([^>]+)>', sender)
-                    sender_email = sender_email[0] if sender_email else sender
-                    
-                    # Check if sender is a person (not a system)
-                    emails.append(email_data)
+                    # Simplified person email check
+                    sender_email = email_data.get('sender', '').split('<')[-1].strip('>')
+                    if self._is_person_email(email_data.get('sender', ''), sender_email):
+                        emails.append(email_data)
                         
-                    # Break if we have enough personal emails
-                    if len(emails) >= 15:
-                        break
+                        if len(emails) >= limit:
+                            break
+            
+            # Update local cache
+            self.email_cache[cache_key] = {
+                'emails': emails,
+                'timestamp': current_time
+            }
             
             return emails
         except Exception as e:
@@ -146,27 +159,21 @@ class EmailProcessor:
             return []
     
     def _is_person_email(self, sender_name: str, sender_email: str) -> bool:
-        # Check for important domains
-        important_domains = ['company.com', 'internal.org', 'client.com', 'partner.com']
-        if any(domain in sender_email.lower() for domain in important_domains):
-            return True
-            
-        # Check for important roles in sender name
-        important_roles = ['director', 'manager', 'lead', 'head', 'ceo', 'cto', 'cfo',
-                          'vp', 'president', 'supervisor', 'coordinator', 'specialist']
-        if any(role in sender_name.lower() for role in important_roles):
-            return True
-            
-        # Exclude common system patterns
-        system_patterns = ['system', 'admin', 'noreply', 'no-reply', 'notification',
-                          'alert', 'update', 'info', 'support', 'help', 'service']
-        if any(pattern in sender_name.lower() or pattern in sender_email.lower() 
-               for pattern in system_patterns):
+        # Exclude common system patterns first
+        system_patterns = ['noreply', 'no-reply', 'notification',
+                          'donotreply', 'newsletter', 'marketing',
+                          'automated', 'system']
+        if any(pattern in sender_email.lower() for pattern in system_patterns):
             return False
-            
-        # Check for personal email format (typically FirstName.LastName or similar)
-        name_parts = re.findall(r'^[\w.-]+$', sender_email.split('@')[0])
-        return bool(name_parts)
+        
+        # Check for known newsletter/marketing domains
+        newsletter_domains = ['newsletter.', 'marketing.', 'promo.',
+                             'offer.', 'deals.', 'campaign.']
+        if any(domain in sender_email.lower() for domain in newsletter_domains):
+            return False
+        
+        # Accept all other emails that aren't filtered out above
+        return True
         try:
             # Fetch messages from Gmail API
             results = self.service.users().messages().list(
@@ -198,7 +205,7 @@ class EmailProcessor:
             headers = {h['name']: h['value'] for h in email_data['payload']['headers']}
             subject = headers.get('Subject', '(No subject)')
             sender = headers.get('From', '(Unknown sender)')
-            timestamp = headers.get('Date', datetime.datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000'))
+            timestamp = headers.get('Date', datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000'))
             labels = email_data.get('labelIds', [])
             priority= self._determine_priority(subject, email_data.get('snippet', ''), labels, sender)
             catagory = self._determine_category(subject, email_data.get('snippet', ''), labels, priority)
@@ -279,7 +286,7 @@ class EmailProcessor:
                 category = email.get('category', 'General')
                 categories_count[category] = categories_count.get(category, 0) + 1
             
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             return {
                 'unread': unread_count,
@@ -297,7 +304,7 @@ class EmailProcessor:
                 'threads': 0,
                 'pending': 0,
                 'categories': {},
-                'last_updated': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                'last_updated': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             
     def get_action_items(self, status_filter: str = "All") -> List[Dict[str, Any]]:
@@ -616,26 +623,46 @@ class EmailProcessor:
                 sender = headers.get('From', '(Unknown sender)')
                 date = headers.get('Date', '')
                 
-                # Get email body with better decoding
+                # Extract content with AI analysis
                 content_data = self._extract_email_content(email_data)
                 body = content_data.get('body', '')
-                summary = content_data.get('summary', '')
+                ai_summary = content_data.get('ai_summary', '')
+                ai_response = content_data.get('ai_response', '')
                 
                 # Determine priority and category
                 priority = self._determine_priority(subject, body, email_data['labelIds'])
                 category = self._determine_category(subject, body, email_data['labelIds'], priority)
                 
-                # Create email object with all metadata
+                # Create or update email in database
+                
+                with Session(engine) as session:
+                    email_record = session.query(Email).filter(Email.id == msg['id']).first()
+                    if not email_record:
+                        email_record = Email(
+                            id=msg['id'],
+                            sender=sender,
+                            subject=subject,
+                            body=body,
+                            timestamp=datetime.strptime(date, '%a, %d %b %Y %H:%M:%S %z'),
+                            category=category,
+                            summary=ai_summary,
+                            ai_response=ai_response
+                        )
+                        session.add(email_record)
+                    else:
+                        email_record.summary = ai_summary
+                        email_record.ai_response = ai_response
+                    session.commit()
+
+                # Create email object for display
                 email = {
                     'id': msg['id'],
                     'subject': subject,
                     'sender': sender,
                     'timestamp': date,
                     'body': body,
-                    'summary': summary,
-                    'is_unread': 'UNREAD' in email_data['labelIds'],
-                    'is_important': 'IMPORTANT' in email_data['labelIds'],
-                    'is_starred': 'STARRED' in email_data['labelIds'],
+                    'summary': ai_summary,
+                    'ai_response': ai_response,
                     'priority': priority,
                     'category': category
                 }
@@ -736,33 +763,10 @@ class EmailProcessor:
             content = html.escape(content)
             content = ' '.join(content.split())
 
-            # Generate AI summary and response using local models
-            ai_summary = ""
-            ai_response = ""
-            if content and len(content) > 20:
-                try:
-                    # Use local BART model for summarization
-                    summary_model = pipeline('summarization', model='facebook/bart-large-cnn')
-                    ai_summary = summary_model(content, max_length=60, min_length=20, do_sample=False)[0]['summary_text']
-                except Exception as e:
-                    print(f"Error generating summary: {e}")
-                    ai_summary = "No summary available."
-
-                try:
-                    # Use local Blenderbot model for response generation
-                    response_model = pipeline('text2text-generation', model='facebook/blenderbot-400M-distill')
-                    ai_response = response_model(content, max_length=60, min_length=20, do_sample=False)[0]['generated_text']
-                except Exception as e:
-                    print(f"Error generating response: {e}")
-                    ai_response = "No AI response available."
-            else:
-                ai_summary = "No summary available."
-                ai_response = "No AI response available."
-
             return {
                 'body': content if content else "No content available",
-                'ai_summary': ai_summary,
-                'ai_response': ai_response
+                'ai_summary': "",  # Initialize empty
+                'ai_response': ""   # Initialize empty
             }
         except Exception as e:
             print(f"Error extracting email content: {e}")

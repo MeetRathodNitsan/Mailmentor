@@ -1,4 +1,5 @@
 import email
+import re
 from click import prompt
 import openai
 import requests
@@ -8,13 +9,24 @@ from transformers import pipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import requests
-from ollama_client import OllamaClient
+
 # Load the summarization model using a compatible model
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-# Load the response generation model
-responder = pipeline("text2text-generation", model="facebook/blenderbot-400M-distill")
+summarizer = None
+responder = None
+
+def initialize_models():
+    global summarizer, responder
+    try:
+        if summarizer is None:
+            summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+        if responder is None:
+            responder = pipeline("text2text-generation", model="facebook/blenderbot-400M-distill")
+    except Exception as e:
+        print(f"Error initializing models: {e}")
+        raise
 
 def generate_ai_response(prompt: str) -> str:
+    initialize_models()
     if USE_OPENAI_API:
         try:
             client = openai.OpenAI(api_key=OPENAI_API_KEY)
@@ -39,6 +51,7 @@ def generate_ai_response(prompt: str) -> str:
         return generate_local_summary(prompt)
 
 def analyze_email_content(subject: str, content: str) -> tuple[str, str]:
+    initialize_models()
     try:
         summary_prompt = f"Summarize this email briefly:\nSubject: {subject}\nContent: {content}"
         suggestion_prompt = f"Suggest a brief action or response for this email:\nSubject: {subject}\nContent: {content}"
@@ -93,13 +106,14 @@ def _post_process_summary(original: str, summary: str) -> str:
     
     return summary
 
-# Initialize Ollama client
-ollama_client = OllamaClient()
-
 def generate_local_summary(content: str) -> str:
     try:
+        # Truncate content to fit within model's maximum token limit
+        max_chars = 512  # Approximate character limit for 128 tokens
+        truncated_content = content[:max_chars] if len(content) > max_chars else content
+        
         # Use the bart-large-cnn model for summarization
-        summary = summarizer(content, 
+        summary = summarizer(truncated_content, 
                            max_length=MODEL_PARAMS["max_length"], 
                            min_length=MODEL_PARAMS["min_length"], 
                            do_sample=True,
@@ -111,7 +125,11 @@ def generate_local_summary(content: str) -> str:
 
 def generate_local_response(subject: str, content: str) -> str:
     try:
-        prompt = f"Subject: {subject}\nContent: {content}\nWrite a professional response:"
+        # Truncate content to fit within model's maximum token limit
+        max_chars = 512  # Approximate character limit for 128 tokens
+        truncated_content = content[:max_chars] if len(content) > max_chars else content
+        
+        prompt = f"Subject: {subject}\nContent: {truncated_content}\nWrite a professional response:"
         response = responder(prompt, 
                            max_length=MODEL_PARAMS["max_length"], 
                            do_sample=True, 
@@ -123,22 +141,24 @@ def generate_local_response(subject: str, content: str) -> str:
         return "Error generating response."
 
 def _post_process_summary(original: str, summary: str) -> str:
-    """
-    Post-process the AI-generated summary to ensure it is not a copy of the original content.
-    """
-    original_lower = original.strip().lower()
-    summary_lower = summary.strip().lower()
-
-    # Check if the summary is too similar to the original content
-    if summary_lower == original_lower or summary_lower in original_lower:
-        return "This email contains important information. Please review the content."
-
-    # Check for excessive overlap (e.g., more than 70% similarity)
-    overlap = len(set(summary_lower.split()) & set(original_lower.split())) / len(set(original_lower.split()))
-    if overlap > 0.7:
-        return "This email contains important information. Please review the content."
-
-    return summary  # Return the original summary if it passes all checks
+    # Remove code blocks and inline code
+    summary = re.sub(r'```[\s\S]*?```', '', summary)
+    summary = re.sub(r'`[^`]*`', '', summary)
+    
+    # Clean up any remaining markdown or special characters
+    summary = re.sub(r'\[.*?\]\(.*?\)', '', summary)  # Remove links
+    summary = re.sub(r'[#*_~]', '', summary)  # Remove markdown characters
+    
+    # Remove any quoted content or timestamps
+    summary = summary.split('Content:')[-1].split('Write a professional response:')[0].strip()
+    summary = summary.split('Subject:')[0].strip()
+    
+    # Keep only the first sentence if multiple exist
+    sentences = summary.split('.')
+    if sentences:
+        summary = sentences[0].strip() + '.'
+    
+    return summary
 
 def generate_ai_response_to_email(subject: str, content: str) -> str:
     """Generate a single, concise response to an email."""
