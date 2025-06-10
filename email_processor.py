@@ -1,4 +1,6 @@
+from ast import pattern
 import base64
+from pydoc import text
 from models import Email
 from sqlalchemy.orm import Session
 from config import engine
@@ -157,6 +159,7 @@ class EmailProcessor:
         except Exception as e:
             print(f"Error fetching emails: {e}")
             return []
+               
     
     def _is_person_email(self, sender_name: str, sender_email: str) -> bool:
         # Exclude common system patterns first
@@ -173,7 +176,7 @@ class EmailProcessor:
             return False
         
         # Accept all other emails that aren't filtered out above
-        return True
+        return Trues
         try:
             # Fetch messages from Gmail API
             results = self.service.users().messages().list(
