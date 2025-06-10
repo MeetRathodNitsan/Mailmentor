@@ -20,7 +20,7 @@ from config import OPENAI_API_KEY, OPENAI_API_ENDPOINT, SessionLocal
 from models import Email
 from ai_services import generate_ai_response, analyze_email_content, generate_ai_response_to_email
 from utils import extract_email_content, build_query
-from vector_store import initialize_vector_store
+from vector_store import EmailVectorStore
 from categorization import categorize_email
 import requests
 from llama_index.core import Document, VectorStoreIndex
@@ -75,6 +75,7 @@ class EmailProcessor:
         self.vectorizer = TfidfVectorizer()
         self.email_cache = {}
         self.last_cache_update = None
+        self.vector_store = EmailVectorStore()
 
 
     def _preprocess_text(self, text):
@@ -87,29 +88,28 @@ class EmailProcessor:
 
         
        
-    def search_emails_nlp(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def initialize_vector_store(self):
+        """Initialize the vector store with existing emails."""
         try:
-            emails = self.fetch_emails(100)  # Adjust fetch limit as needed
-            corpus = []
-            email_lookup = []
-            for email in emails:
-                full_text = f"{email.get('subject', '')} {email.get('body', '')}"
-                corpus.append(self._preprocess_text(full_text))
-                email_lookup.append(email)
-            tfidf = TfidfVectorizer()
-            doc_vectors = tfidf.fit_transform(corpus)
-            query_vec = tfidf.transform([self._preprocess_text(query)])
-            scores = cosine_similarity(query_vec, doc_vectors).flatten()
-            top_indices = scores.argsort()[::-1][:top_k]
-            results = []
-            for idx in top_indices:
-                email = email_lookup[idx]
-                email['score'] = float(scores[idx])
-                results.append(email)
-            return results
+            emails = self.fetch_emails(limit=100)  # Adjust limit as needed
+            self.vector_store.add_emails(emails)
+            self.vector_store.persist()
         except Exception as e:
-            print(f"Smart search failed: {e}")
-            return []
+            print(f"Error initializing vector store: {e}")
+
+def search_emails_nlp(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    try:
+        results = self.vector_store.search_emails(query, n_results=top_k)
+        # Convert vector store results to the expected format
+        formatted_results = []
+        for result in results:
+            email_data = result['metadata']
+            email_data['score'] = result['similarity_score']
+            formatted_results.append(email_data)
+        return formatted_results
+    except Exception as e:
+        print(f"Smart search failed: {e}")
+        return []
 
     def fetch_emails(self, limit: int = 15) -> List[Dict[str, Any]]:
         try:
@@ -677,39 +677,9 @@ class EmailProcessor:
     def initialize_vector_store(self):
         try:
             emails = self.fetch_emails(1000)  # Fetch more emails for better search
-            documents = []
-            for email in emails:
-                # Include more context in the document text
-                text = f"""
-                Subject: {email['subject']}
-                From: {email['sender']}
-                Date: {email['timestamp']}
-                
-                Content:
-                {email.get('body', '')}
-                
-                Summary:
-                {email.get('summary', '')}
-                """
-                doc = Document(
-                    text=text,
-                    metadata={
-                        'id': email['id'],
-                        'subject': email['subject'],
-                        'sender': email['sender'],
-                        'timestamp': email['timestamp'],
-                        'categories': self.categorize_email(email)
-                    }
-                )
-                documents.append(doc)
-            
-            # Create a new vector store index with the documents using our local embedding model
-            self.emails_index = VectorStoreIndex.from_documents(
-                documents,
-                embed_model=self.embed_model,  # Use the HuggingFace embedding model we initialized
-                show_progress=True
-            )
-            print(f"Successfully indexed {len(documents)} emails")
+            self.vector_store.add_emails(emails)
+            self.vector_store.persist()  # Make sure to persist after adding emails
+            print(f"Successfully initialized vector store with {len(emails)} emails")
         except Exception as e:
             print(f"Error initializing vector store: {e}")
 
@@ -1160,7 +1130,7 @@ class EmailProcessor:
                 r"^\s*[-*]\s+.+",  # bullet points
                 r"^\s*\d+\.\s+.+",  # numbered lists
                 r"\bplease\b", r"\bkindly\b", r"\baction required\b", r"\bto do\b",
-                r"\bremind\b", r"\bfollow up\b", r"\bcomplete\b", r"\bpending\b"
+                r"\bremind\b", r"\bfollow up\b", r"\bcomplete\b", r"\bpending\b", r"\bfeedback\b"
             ]
             
             for email in emails:

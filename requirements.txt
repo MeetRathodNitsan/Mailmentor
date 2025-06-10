@@ -22,3 +22,4 @@ beautifulsoup4>=4.9.3
 werkzeug>=2.0.0  
 chromadb
 pydantic
+sentence-transformers

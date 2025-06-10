@@ -279,6 +279,8 @@ def init_gmail_connection(user):
                     session.close()
             email_processor = EmailProcessor(credentials)
             st.session_state['email_processor'] = email_processor
+            # Initialize the vector store with existing emails
+            st.session_state['email_processor'].initialize_vector_store()
             return True
         except Exception as e:
             st.error(f"Error initializing Gmail connection: {str(e)}")
@@ -305,6 +307,8 @@ def init_gmail_connection(user):
             session.commit()
             email_processor = EmailProcessor(credentials)
             st.session_state['email_processor'] = email_processor
+            # Initialize the vector store with existing emails
+            st.session_state['email_processor'].initialize_vector_store()
             return True
         finally:
             session.close()
@@ -711,6 +715,7 @@ def authenticate_gmail():
         )
         credentials = flow.run_local_server(port=0)
         st.session_state.email_processor = EmailProcessor(credentials)
+        st.session_state['email_processor'].initialize_vector_store()
         st.session_state.authenticated = True
         return True
     except Exception as e:
