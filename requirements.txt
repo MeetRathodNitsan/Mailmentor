@@ -19,4 +19,6 @@ google-auth-oauthlib>=0.4.6
 google-auth-httplib2>=0.1.0
 google-api-python-client>=2.0.0
 beautifulsoup4>=4.9.3
-werkzeug>=2.0.0  # Add this line
+werkzeug>=2.0.0  
+chromadb
+pydantic
