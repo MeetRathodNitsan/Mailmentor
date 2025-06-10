@@ -18,7 +18,8 @@ def initialize_models():
     global summarizer, responder
     try:
         if summarizer is None:
-            summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+            # Replace the large BART model with a smaller alternative
+            summarizer = pipeline("summarization", model="facebook/bart-base")
         if responder is None:
             responder = pipeline("text2text-generation", model="facebook/blenderbot-400M-distill")
     except Exception as e:

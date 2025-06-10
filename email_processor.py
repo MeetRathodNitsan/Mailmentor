@@ -5,7 +5,7 @@ from config import engine
 import html
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime,timezone
-from ollama_client import OllamaClient
+# from ollama_client import OllamaClient
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from google.oauth2.credentials import Credentials
@@ -97,19 +97,19 @@ class EmailProcessor:
         except Exception as e:
             print(f"Error initializing vector store: {e}")
 
-def search_emails_nlp(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-    try:
-        results = self.vector_store.search_emails(query, n_results=top_k)
+    def search_emails_nlp(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        try:
+            results = self.vector_store.search_emails(query, n_results=top_k)
         # Convert vector store results to the expected format
-        formatted_results = []
-        for result in results:
-            email_data = result['metadata']
-            email_data['score'] = result['similarity_score']
-            formatted_results.append(email_data)
-        return formatted_results
-    except Exception as e:
-        print(f"Smart search failed: {e}")
-        return []
+            formatted_results = []
+            for result in results:
+                email_data = result['metadata']
+                email_data['score'] = result['similarity_score']
+                formatted_results.append(email_data)
+            return formatted_results
+        except Exception as e:
+            print(f"Smart search failed: {e}")
+            return []
 
     def fetch_emails(self, limit: int = 15) -> List[Dict[str, Any]]:
         try:
@@ -283,8 +283,11 @@ def search_emails_nlp(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
             # Get recent emails to calculate categories
             recent_emails = self.fetch_emails(limit=100)  # Fetch more emails for better stats
             for email in recent_emails:
-                category = email.get('category', 'General')
-                categories_count[category] = categories_count.get(category, 0) + 1
+                # Fix: Use 'catagory' instead of 'category' to match the key from _process_single_email
+                category = email.get('catagory', 'General')
+                if category not in categories_count:
+                    categories_count[category] = 0
+                categories_count[category] += 1
             
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
