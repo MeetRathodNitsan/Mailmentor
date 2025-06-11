@@ -176,7 +176,7 @@ class EmailProcessor:
             return False
         
         # Accept all other emails that aren't filtered out above
-        return Trues
+        return True
         try:
             # Fetch messages from Gmail API
             results = self.service.users().messages().list(
